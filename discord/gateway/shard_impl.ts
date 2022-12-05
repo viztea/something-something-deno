@@ -1,20 +1,13 @@
-import { Nullable, RequiredKeys, createLimiter } from "../../tools/mod.ts";
-import { JsonParseStream, ModernError, v10, ws, inflate, delay } from "../deps.ts";
+import { Nullable, RequiredKeys, createLimiter, createReadableStream } from "../../tools/mod.ts";
+import { JsonParseStream, ModernError, v10, ws, delay } from "../deps.ts";
 import { Shard, ShardCompression, ShardConnectOptions, ShardDisconnectOptions, ShardHeart, ShardSession, ShardSettings, ShardState } from "./shard.ts";
-import { createDecompressor, Decompress } from "./zlib.ts";
+import { createDecompressor } from "./zlib.ts";
 
+import { readableStreamFromIterable } from "https://deno.land/std@0.167.0/streams/readable_stream_from_iterable.ts";
+import { decoder } from "https://deno.land/x/pogsocket@2.0.0/encoding.ts";
+
+const decode = decoder()
 export const EncodeError = ModernError.subclass("EncodeError");
-
-function createReadableStream<T>(): { stream: ReadableStream<T>, controller: ReadableStreamDefaultController<T> } {
-    let controller: ReadableStreamDefaultController<T>;
-
-    const stream = new ReadableStream<T>({
-        start: ctr => void (controller = ctr)
-    });
-
-    // @ts-expect-error: controller is assigned 
-    return { stream, controller }
-}
 
 export function createShardHeart(shard: Shard, interval: number): ShardHeart {
     let acknowledged = true, lastHeartbeat: number, latency: Nullable<number> = null;
@@ -56,13 +49,13 @@ export function createShardSession(shard: Shard, id: string): ShardSession {
         return shard.send({ op: v10.GatewayOpcodes.Resume, d });
     }
 
-    return { 
+    return {
         id,
         get sequence() {
             return sequence
         },
-        resume, 
-        updateSequence: value => sequence = value 
+        resume,
+        updateSequence: value => sequence = value
     };
 }
 
@@ -75,6 +68,35 @@ export const DEFAULT_SHARD_CONNECT_CONFIG: RequiredKeys<ShardConnectOptions, Exc
         browser: "Kyu Bot",
         device: "Kyu Bot",
         os: "iOS",
+    }
+}
+
+function getPayloadStream(socket: ws.PogSocket, compression: ShardCompression): ReadableStream<v10.GatewayReceivePayload> {
+    const jsonTransform = new JsonParseStream() as unknown as TransformStream<string, v10.GatewayReceivePayload>;
+    return readableStreamFromIterable(ws.readSocket(socket))
+        .pipeThrough(createShardWebSocketStream(compression))
+        .pipeThrough(jsonTransform);
+}
+
+function createShardWebSocketStream(compression: ShardCompression): TransformStream<ws.PogSocketEvent, string> {
+    const payloads   = createReadableStream<string>()
+        , decompress = createDecompressor(compression, {
+            data: data => payloads.controller.enqueue(decode(data)),
+            error: console.error // todo: replace
+        });
+
+    return {
+        readable: payloads.stream,
+        writable: new WritableStream({
+            write: event => {
+                switch (event.type) {
+                    case "message": {
+                        typeof event.data === "string" ? payloads.controller.enqueue(event.data) : decompress(event.data);
+                        break
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -92,7 +114,7 @@ export function createShard(settings: ShardSettings): Shard {
         let encoded;
         try {
             encoded = JSON.stringify(payload)
-        } catch(cause) {
+        } catch (cause) {
             settings.events?.error?.(new EncodeError("Could not encode JSON", { cause }));
             settings.events?.debug?.("ws", "unable to encode payload:", payload);
             return
@@ -104,60 +126,33 @@ export function createShard(settings: ShardSettings): Shard {
     }
 
     const dispatch = createReadableStream<v10.GatewayDispatchPayload>()
-        , limiter  = createLimiter({ async: true, defaultTokens: 120, refreshAfter: 6e4 });
+        , limiter = createLimiter({ async: true, defaultTokens: 120, refreshAfter: 6e4 });
 
     /* pause the payload limiter so that nothing gets sent before the shard is ready. */
     limiter.pause();
 
     async function connect(options: typeof DEFAULT_SHARD_CONNECT_CONFIG) {
-        let compress = !!options.compression
-        if (options.compression === ShardCompression.Transport) {
+        let compression = options.compression
+        if (compression === ShardCompression.Transport) {
             settings.events?.debug?.("ws", "transport compression is not supported, using payload compression instead.");
-            compress = false;
+            compression = ShardCompression.Payload;
         }
 
-        const params = new URLSearchParams(), messages = createReadableStream<string>();
-
-        /* set default parameters. */
+        /* create gateway url params */
+        const params = new URLSearchParams();
         params.append("encoding", "json");
-
-        /* setup compression. */
-        let decompress: Decompress;
-        if (compress) {
-            const decoder = new TextDecoder();
-            if (options.compression === ShardCompression.Transport) {
-                decompress = createDecompressor({
-                    error: e => {
-                        settings.events?.error?.(e);
-                    },
-                    data: data => {
-                        const decoded = decoder.decode(data);
-                        messages.controller.enqueue(decoded);
-                    }
-                });
-
-                params.append("compress", "zlib-stream")
-            } else {
-                decompress = data => messages.controller.enqueue(decoder.decode(inflate(data)));
-            }
+        if (options.compression === ShardCompression.Transport) {
+            params.append("compress", "zlib-stream")
         }
 
         /* create socket. */
         state = ShardState.Connecting;
         socket = await ws.connectPogSocket(`${gateway}?${params}`);
 
-        /* listen for websocket frames. */
-        ws.useEvents(socket, {
-            message: data => typeof data === "string" 
-                ? messages.controller.enqueue(data)
-                : decompress(data)
-        });
-        
         /* return message stream */
-        const parsedStream = messages.stream.pipeThrough(new JsonParseStream());
-        return parsedStream as unknown as ReadableStream<v10.GatewayReceivePayload>;
+        return getPayloadStream(socket, compression);
     }
- 
+
     return {
         state, dispatch: dispatch.stream,
         get heart() {
@@ -175,7 +170,7 @@ export function createShard(settings: ShardSettings): Shard {
 
             for await (const payload of await connect(options as typeof DEFAULT_SHARD_CONNECT_CONFIG)) {
                 settings.events?.debug?.("ws/recv", `${v10.GatewayOpcodes[payload.op]}:`, JSON.stringify(payload));
-                
+
                 switch (payload.op) {
                     case v10.GatewayOpcodes.Dispatch: {
                         switch (payload.t) {

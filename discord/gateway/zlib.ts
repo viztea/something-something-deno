@@ -1,4 +1,5 @@
-import { ModernError, zlib } from "../deps.ts";
+import { ModernError, zlib, inflate } from "../deps.ts";
+import { ShardCompression } from "./shard.ts";
 
 const ZLIB_SUFFIX = new Uint8Array([0x00, 0x00, 0xff, 0xff]);
 
@@ -11,34 +12,51 @@ export interface DecompressorEvents {
     error: (error: Error) => void;
 }
 
-export function createDecompressor(events: DecompressorEvents): Decompress {
-    const inflate = new zlib.Inflate({ windowBits: 128 * 1024 });
-    return data => {
-        let flushing = true;
+export function createDecompressor(type: ShardCompression, events: DecompressorEvents): Decompress {
+    let decompress: Decompress;
+    if (type === ShardCompression.Payload) {
+        decompress = data => {
+            let decompressed: Uint8Array;
+            try {
+                decompressed = inflate(data);
+            } catch (cause) {
+                const error = new DecompressError("Unable to decompress data", { cause });
+                return events.error(error);
+            }
 
-        const suffix = data.slice(data.length - 4, data.length);
-        for (let pos = 0; pos < suffix.length; pos++) {
-            if (suffix[pos] !== ZLIB_SUFFIX[pos]) {
-                flushing = false;
-                break;
+            events.data(decompressed);
+        }
+    } else {
+        const inflate = new zlib.Inflate({ windowBits: 128 * 1024 });
+        decompress = data => {
+            let flushing = true;
+
+            const suffix = data.slice(data.length - 4, data.length);
+            for (let pos = 0; pos < suffix.length; pos++) {
+                if (suffix[pos] !== ZLIB_SUFFIX[pos]) {
+                    flushing = false;
+                    break;
+                }
+            }
+
+            inflate.push(data, flushing ? 2 : 0);
+            if (!flushing) {
+                return;
+            }
+
+            if (inflate.err) {
+                const error = new DecompressError("Unable to decompress data", {
+                    cause: `${inflate.err}: ${inflate.msg}`
+                });
+
+                return events.error(error);
+            }
+
+            if (typeof inflate.result !== "string") {
+                events.data(inflate.result);
             }
         }
-
-        inflate.push(data, flushing ? 2 : 0);
-        if (!flushing) {
-            return;
-        }
-
-        if (inflate.err) {
-            const error = new DecompressError("Unable to decompress data", { 
-                cause: `${inflate.err}: ${inflate.msg}`
-            });
-
-            return events.error(error);
-        }
-
-        if (typeof inflate.result !== "string") {
-            events.data(inflate.result);
-        }
     }
+
+    return decompress;
 }
