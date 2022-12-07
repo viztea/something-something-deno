@@ -1,29 +1,32 @@
-import { Nullable, RequiredKeys, createLimiter, createReadableStream } from "../../tools/mod.ts";
-import { JsonParseStream, ModernError, v10, ws, delay } from "../deps.ts";
-import { Shard, ShardCompression, ShardConnectOptions, ShardDisconnectOptions, ShardHeart, ShardSession, ShardSettings, ShardState } from "./shard.ts";
-import { createDecompressor } from "./zlib.ts";
+import { Nullable, RequiredKeys, createLimiter, readable, Limiter, Readable } from "../../tools/mod.ts";
+import { v10, ws, readableStreamFromIterable } from "../deps.ts";
+import { Shard, ShardCompression, ShardConnectOptions, ShardDisconnectOptions, ShardEventType, ShardHeart, ShardId, ShardSession, ShardSettings, ShardState } from "./shard.ts";
+import { fromWebSocketEventToShardEvent } from "./ws.ts";
+import { handleCloseCode, handleReceivedPayload } from "./handlers.ts";
+import { UNRECOVERABLE_CLOSE_CODES } from "./constants.ts";
 
-import { readableStreamFromIterable } from "https://deno.land/std@0.167.0/streams/readable_stream_from_iterable.ts";
-import { decoder } from "https://deno.land/x/pogsocket@2.0.0/encoding.ts";
-
-const decode = decoder()
-export const EncodeError = ModernError.subclass("EncodeError");
-
-export function createShardHeart(shard: Shard, interval: number): ShardHeart {
+export function createShardHeart(memory: ShardMemory, interval: number): ShardHeart {
     let acknowledged = true, lastHeartbeat: number, latency: Nullable<number> = null;
 
-    function send() {
+    async function send(reason: string, ignoreNonAcked = false) {
         if (!acknowledged) {
-            // TODO(melike2d): handle zombie shards.
-            return;
+            memory.settings.events?.debug?.("ws/heart", "last heartbeat was not acknowledged, reconnecting...");
+            if (!ignoreNonAcked) return shardDisconnect(memory, { reconnect: true, code: 1_012 });
         }
 
+        memory.settings.events?.debug?.("ws/heart", "sending heartbeat, reason:", reason)
         lastHeartbeat = performance.now();
-        shard.send({ op: v10.GatewayOpcodes.Heartbeat, d: shard.session?.sequence ?? -1 }, true);
+        acknowledged = false;
+
+        await shardSend(
+            memory,
+            { op: v10.GatewayOpcodes.Heartbeat, d: memory.session?.sequence ?? -1 },
+            true
+        );
     }
 
+    const task = setInterval(send, interval, "task");
     return {
-        task: setInterval(send, interval),
         get acknowledged() {
             return acknowledged;
         },
@@ -33,20 +36,23 @@ export function createShardHeart(shard: Shard, interval: number): ShardHeart {
         ack: () => {
             acknowledged = true;
             latency = performance.now() - lastHeartbeat!;
-        }
+            memory.settings.events?.debug?.("ws/heart", "last heartbeat was acknowledged.", "latency:", latency);
+        },
+        stop: () => clearInterval(task),
+        beat: send
     }
 }
 
-export function createShardSession(shard: Shard, id: string): ShardSession {
+export function createShardSession(memory: ShardMemory, id: string): ShardSession {
     let sequence: ShardSession["sequence"] = null;
     function resume() {
         const d: v10.GatewayResumeData = {
-            token: shard.token,
+            token: memory.settings.token,
             seq: sequence ?? -1,
             session_id: id
         }
 
-        return shard.send({ op: v10.GatewayOpcodes.Resume, d });
+        return shardSend(memory, { op: v10.GatewayOpcodes.Resume, d }, true);
     }
 
     return {
@@ -60,7 +66,7 @@ export function createShardSession(shard: Shard, id: string): ShardSession {
 }
 
 /** Default shard configuration */
-export const DEFAULT_SHARD_CONNECT_CONFIG: RequiredKeys<ShardConnectOptions, Exclude<keyof ShardConnectOptions, "presence">> = {
+export const DEFAULT_SHARD_CONNECT_CONFIG: RequiredKeys<ShardConnectOptions, Exclude<keyof ShardConnectOptions, "presence" | "shard">> = {
     intents: 0,
     compression: ShardCompression.Payload,
     gateway: "wss://gateway.discord.gg",
@@ -71,151 +77,229 @@ export const DEFAULT_SHARD_CONNECT_CONFIG: RequiredKeys<ShardConnectOptions, Exc
     }
 }
 
-function getPayloadStream(socket: ws.PogSocket, compression: ShardCompression): ReadableStream<v10.GatewayReceivePayload> {
-    const jsonTransform = new JsonParseStream() as unknown as TransformStream<string, v10.GatewayReceivePayload>;
-    return readableStreamFromIterable(ws.readSocket(socket))
-        .pipeThrough(createShardWebSocketStream(compression))
-        .pipeThrough(jsonTransform);
+export interface ShardMemory {
+    settings: ShardSettings;
+    heart: Nullable<ShardHeart>;
+    session: Nullable<ShardSession>;
+    socket: Nullable<ws.PogSocket>;
+    state: ShardState;
+    limiter: Limiter;
+    dispatch: Readable<v10.GatewayDispatchPayload>;
+    connect: Nullable<{
+        compression: ShardCompression;
+        gateway: string;
+        id: ShardId;
+        options: typeof DEFAULT_SHARD_CONNECT_CONFIG;
+    }>;
 }
 
-function createShardWebSocketStream(compression: ShardCompression): TransformStream<ws.PogSocketEvent, string> {
-    const payloads   = createReadableStream<string>()
-        , decompress = createDecompressor(compression, {
-            data: data => payloads.controller.enqueue(decode(data)),
-            error: console.error // todo: replace
-        });
+function shardSend0(memory: ShardMemory, payload: v10.GatewaySendPayload) {
+    if (!memory.socket) return;
 
-    return {
-        readable: payloads.stream,
-        writable: new WritableStream({
-            write: event => {
-                switch (event.type) {
-                    case "message": {
-                        typeof event.data === "string" ? payloads.controller.enqueue(event.data) : decompress(event.data);
-                        break
-                    }
-                }
+    /* encode payload into JSON */
+    let encoded;
+    try {
+        encoded = JSON.stringify(payload)
+    } catch (cause) {
+        memory.settings.events?.error?.(new Error("Could not encode JSON", { cause }));
+        memory.settings.events?.debug?.("ws", "unable to encode payload:", payload);
+        return
+    }
+
+    /* send encoded payload to socket */
+    ws.sendMessage(memory.socket, encoded);
+    memory.settings.events?.debug?.("ws", ">>>", encoded);
+}
+
+export function shardSend(memory: ShardMemory, payload: v10.GatewaySendPayload, important = false) {
+    return memory.limiter.push(() => shardSend0(memory, payload), important);
+}
+
+function shardClose0(memory: ShardMemory, reason: string, code = 4_420): boolean {
+    try {
+        if (memory.socket) ws.closeSocket(memory.socket, code, reason);
+        return true
+    } catch (e) {
+        memory.settings.events?.error?.(e);
+        memory.settings.events?.debug?.("ws", `unable to close ws connection: ${e}`);
+        return false;
+    } finally {
+        memory.limiter.pause();
+        memory.socket = null;
+    }
+}
+
+async function shardConnect0(memory: ShardMemory) {
+    const connect = memory.connect;
+    if (!connect) {
+        return;
+    }
+
+    if (connect.options.compression === ShardCompression.Transport) {
+        memory.settings.events?.debug?.("ws", "transport compression is not supported, using payload compression instead.");
+        connect.compression = ShardCompression.Payload;
+    }
+
+    /* create gateway url params */
+    const params = new URLSearchParams();
+    params.append("encoding", "json");
+
+    if (connect.compression === ShardCompression.Transport) {
+        params.append("compress", "zlib-stream")
+    }
+
+    /* create socket. */
+    const url = `${connect.gateway}?${params}`;
+    memory.settings.events?.debug?.("ws", "creating connection to url", url);
+    memory.state = ShardState.Connecting;
+    memory.socket = await ws.connectPogSocket(url);
+
+    /* return message stream */
+    return readableStreamFromIterable(ws.readSocket(memory.socket))
+        .pipeThrough(fromWebSocketEventToShardEvent(memory))
+}
+
+export function shardReconnect(memory: ShardMemory) {
+    if (memory.socket?.isClosed === false) {
+        shardClose0(memory, "reconnecting...");
+    }
+
+    memory.settings.events?.debug?.("lifecycle", "attempting to", memory.session
+        ? "resume the current session"
+        : "reconnect to the gateway");
+
+    return shardConnect(memory);
+}
+
+export function shardDisconnect(memory: ShardMemory, options: ShardDisconnectOptions) {
+    if (!memory.socket) {
+        return;
+    }
+
+    memory.state = ShardState.Disconnecting;
+    memory.heart?.stop();
+    memory.heart = null;
+
+    if (!memory.socket.isClosed) {
+        shardClose0(memory, "reconnecting...", options.reconnect && memory.session ? 4_420 : options.code);
+    }
+
+    memory.state = ShardState.Disconnected;
+    if (options.fatal) {
+        memory.session = null;
+    }
+
+    if (options.reconnect) {
+        return shardReconnect(memory);
+    }
+
+    memory.settings.events?.debug?.("lifecycle", "disconnected from the gateway.");
+}
+
+async function shardConnect(memory: ShardMemory) {
+    const events = await shardConnect0(memory);
+    if (!events) {
+        throw new Error("Unable to create socket.");
+    }
+
+    // todo(melike2d): queue identify
+    if (memory.session) {
+        memory.settings.events?.debug?.("identify", "found previous session, resuming.");
+        await memory.session.resume();
+    } else {
+        memory.settings.events?.debug?.("identify", "couldn't find existing session, identifying.");
+        await shardSend(memory, {
+            op: v10.GatewayOpcodes.Identify,
+            d: {
+                intents: memory.connect!.options.intents!,
+                properties: memory.connect!.options.properties!,
+                token: memory.settings.token,
+                presence: memory.connect!.options.presence,
+                compress: memory.connect!.options.compression === ShardCompression.Payload,
+                shard: memory.connect!.id
             }
-        })
+        }, true);
+    }
+
+    for await (const event of events) {
+        if (event.type === ShardEventType.Payload) {
+            await handleReceivedPayload(memory, event.data);
+        } else if (event.type === ShardEventType.Close) {
+            if ([ShardState.Disconnecting, ShardState.Disconnected].includes(memory.state)) {
+                /* we meant to disconnect, nothing to do here. */
+                return;
+            }
+
+            const wasClean = event.code = 1006;
+            memory.settings.events?.debug?.("[ws/close]", `${wasClean ? "" : "non-"}clean close... code:`, event.code, "reason:", event.reason ?? "no reason provided");
+
+            /* reset heart state. */
+            memory.heart?.stop();
+            memory.heart = null;
+
+            /* update our state. */
+            memory.state = ShardState.Disconnected;
+
+            /* handle the close code correctly. */
+            const fatal = handleCloseCode(memory, event.code)   
+                , unrecoverable = UNRECOVERABLE_CLOSE_CODES.includes(event.code);
+
+            memory.settings.events?.debug?.(
+                "ws",
+                "received", unrecoverable ? "unrecoverable" : "recoverable", "close code"
+            );
+
+            shardDisconnect(memory, { reconnect: !unrecoverable, fatal })
+        }
     }
 }
 
 export function createShard(settings: ShardSettings): Shard {
-    let heart: Nullable<ShardHeart> = null,
-        session: Nullable<ShardSession> = null,
-        socket: Nullable<ws.PogSocket> = null,
-        state: ShardState = ShardState.Idle,
-        gateway: string;
-
-    function send(payload: v10.GatewaySendPayload) {
-        if (!socket) return;
-
-        /* encode payload into JSON */
-        let encoded;
-        try {
-            encoded = JSON.stringify(payload)
-        } catch (cause) {
-            settings.events?.error?.(new EncodeError("Could not encode JSON", { cause }));
-            settings.events?.debug?.("ws", "unable to encode payload:", payload);
-            return
-        }
-
-        /* send encoded payload to socket */
-        ws.sendMessage(socket, encoded);
-        settings.events?.debug?.("ws/send", `${v10.GatewayOpcodes[payload.op]}:`, encoded);
-    }
-
-    const dispatch = createReadableStream<v10.GatewayDispatchPayload>()
-        , limiter = createLimiter({ async: true, defaultTokens: 120, refreshAfter: 6e4 });
-
-    /* pause the payload limiter so that nothing gets sent before the shard is ready. */
-    limiter.pause();
-
-    async function connect(options: typeof DEFAULT_SHARD_CONNECT_CONFIG) {
-        let compression = options.compression
-        if (compression === ShardCompression.Transport) {
-            settings.events?.debug?.("ws", "transport compression is not supported, using payload compression instead.");
-            compression = ShardCompression.Payload;
-        }
-
-        /* create gateway url params */
-        const params = new URLSearchParams();
-        params.append("encoding", "json");
-        if (options.compression === ShardCompression.Transport) {
-            params.append("compress", "zlib-stream")
-        }
-
-        /* create socket. */
-        state = ShardState.Connecting;
-        socket = await ws.connectPogSocket(`${gateway}?${params}`);
-
-        /* return message stream */
-        return getPayloadStream(socket, compression);
+    const memory: ShardMemory = {
+        settings,
+        heart: null,
+        session: null,
+        socket: null,
+        state: ShardState.Idle,
+        limiter: createLimiter({ async: true, defaultTokens: 120, refreshAfter: 6e4 }),
+        dispatch: readable<v10.GatewayDispatchPayload>(),
+        connect: null
     }
 
     return {
-        state, dispatch: dispatch.stream,
+        dispatch: memory.dispatch.stream,
+        get state() {
+            return memory.state
+        },
         get heart() {
-            return heart
+            return memory.heart
         },
         get session() {
-            return session
+            return memory.session
         },
         get token() {
             return settings.token;
         },
-        async connect(options: ShardConnectOptions = {}) {
-            options = Object.assign(DEFAULT_SHARD_CONNECT_CONFIG, options);
-            gateway = options.gateway!;
+        async connect(id: ShardId, options: ShardConnectOptions = {}) {
+            const connectOptions = Object.assign(DEFAULT_SHARD_CONNECT_CONFIG, options);
+            memory.connect = {
+                id,
+                options: connectOptions,
+                gateway: connectOptions.gateway,
+                compression: connectOptions.compression
+            };
 
-            for await (const payload of await connect(options as typeof DEFAULT_SHARD_CONNECT_CONFIG)) {
-                settings.events?.debug?.("ws/recv", `${v10.GatewayOpcodes[payload.op]}:`, JSON.stringify(payload));
-
-                switch (payload.op) {
-                    case v10.GatewayOpcodes.Dispatch: {
-                        switch (payload.t) {
-                            case v10.GatewayDispatchEvents.Ready: {
-                                await limiter.resume();
-                                session = createShardSession(this, payload.d.session_id);
-                                gateway = payload.d.resume_gateway_url;
-                                break;
-                            }
-                        }
-
-                        session?.updateSequence(payload.s);
-                        dispatch.controller.enqueue(payload);
-                        break;
-                    }
-
-                    case v10.GatewayOpcodes.Hello: {
-                        state = ShardState.Identifying;
-
-                        heart = createShardHeart(this, payload.d.heartbeat_interval);
-
-                        send({
-                            op: v10.GatewayOpcodes.Identify,
-                            d: {
-                                intents: options.intents!,
-                                properties: options.properties!,
-                                token: settings.token,
-                                presence: options.presence,
-                                compress: options.compression === ShardCompression.Payload
-                            }
-                        });
-
-                        break;
-                    }
-                }
-            }
+            await shardConnect(memory);
         },
-        disconnect: async (options: ShardDisconnectOptions) => {
-            console.log(options);
-            await delay(1);
+        disconnect(options: ShardDisconnectOptions) {
+            shardDisconnect(memory, options);
         },
-        detach: async () => {
-
+        detach() {
+            shardDisconnect(memory, { code: 4_000, reconnect: false, fatal: true });
+            memory.dispatch.controller.close();
         },
-        send: (payload: v10.GatewaySendPayload, important = false) =>
-            limiter.push(send.bind(void 0, payload), important)
+        async send(payload: v10.GatewaySendPayload, important = false) {
+            await shardSend(memory, payload, important)
+        }
     }
 }

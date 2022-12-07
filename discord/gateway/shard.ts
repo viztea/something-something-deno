@@ -8,6 +8,18 @@ export enum ShardCompression {
     Payload
 }
 
+
+export enum ShardEventType {
+    Payload,
+    Close
+}
+
+type createShardEvent<Type extends ShardEventType, D extends Record<string, unknown>> = { type: Type } & D;
+
+export type ShardEvent = ShardCloseEvent | ShardPayloadEvent;
+export type ShardPayloadEvent = createShardEvent<ShardEventType.Payload, { data: v10.GatewayReceivePayload }>;
+export type ShardCloseEvent = createShardEvent<ShardEventType.Close, { code: number, reason?: string }>;
+
 export enum ShardState {
     /**
      * The shard is currently idle, doing nothing.
@@ -51,9 +63,9 @@ export enum ShardState {
     Identifying,
     /**
      * The shard has been destroyed, it must be remade to function again.
-     * @type {ShardState.Destroyed}
+     * @type {ShardState.Detached}
      */
-    Destroyed
+    Detached
 }
 
 export interface ShardSession {
@@ -67,7 +79,7 @@ export interface ShardSession {
     resume(): Promise<void>;
 
     /** Update the current session dispatch sequence. */
-    updateSequence(value: number): void;
+    updateSequence(value: Nullable<number>): void;
 }
 
 export interface ShardHeart {
@@ -77,11 +89,14 @@ export interface ShardHeart {
     /** The latency between heartbeats & their acknowledgements, or null if not available yet. */
     readonly latency: Nullable<number>;
 
-    /** The heartbeating task */
-    readonly task: number;
-
     /** Acknolwedge our last heartbeat. */
     ack(): void;
+
+    /** Stop heartbeating... */
+    stop(): void;
+
+    /** Send a heartbeat. */
+    beat(reason: string, ignoreNonAcked?: boolean): Promise<void>;
 }
 
 export interface ShardSettings {
@@ -133,6 +148,8 @@ export interface ShardDisconnectOptions {
     fatal?: boolean;
 }
 
+export type ShardId = [ shard_id: number, shard_total: number ];
+
 export interface Shard {
     /** Current state of this Shard. */
     readonly state: ShardState;
@@ -154,17 +171,19 @@ export interface Shard {
      * 
      * @param options Options to use.
      */
-    connect(options?: ShardConnectOptions): Promise<void>;
+    connect(id: [ shard_id: number, shard_total: number ], options?: ShardConnectOptions): Promise<void>;
 
     /**
      * Disconnect this shard from the gateway.
      * 
      * @param options Options to use.
      */
-    disconnect(options: ShardDisconnectOptions): Promise<void>;
+    disconnect(options: ShardDisconnectOptions): void;
 
-    /** Detach this shard, making it unusable afterwards. */
-    detach(): Promise<void>;
+    /** 
+     * Detach this shard, making it unusable afterwards. 
+     */
+    detach(): void;
 
     /** 
      * Send a payload to the gateway.

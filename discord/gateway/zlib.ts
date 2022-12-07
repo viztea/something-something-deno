@@ -1,18 +1,14 @@
-import { ModernError, zlib, inflate } from "../deps.ts";
+import { inflate } from "../deps.ts";
 import { ShardCompression } from "./shard.ts";
-
-const ZLIB_SUFFIX = new Uint8Array([0x00, 0x00, 0xff, 0xff]);
-
-export const DecompressError = ModernError.subclass("DecompressError");
 
 export type Decompress = (data: Uint8Array) => void;
 
 export interface DecompressorEvents {
     data: (data: Uint8Array) => void;
-    error: (error: Error) => void;
+    error?: (error: Error) => void;
 }
 
-export function createDecompressor(type: ShardCompression, events: DecompressorEvents): Decompress {
+export function decompressor(type: ShardCompression, events: DecompressorEvents): Decompress {
     let decompress: Decompress;
     if (type === ShardCompression.Payload) {
         decompress = data => {
@@ -20,14 +16,14 @@ export function createDecompressor(type: ShardCompression, events: DecompressorE
             try {
                 decompressed = inflate(data);
             } catch (cause) {
-                const error = new DecompressError("Unable to decompress data", { cause });
-                return events.error(error);
+                const error = new Error("Unable to decompress data: " + cause);
+                return events.error?.(error);
             }
 
             events.data(decompressed);
         }
     } else {
-        const inflate = new zlib.Inflate({ windowBits: 128 * 1024 });
+        /* const inflate = new zlib.Inflate({ windowBits: 128 * 1024 });
         decompress = data => {
             let flushing = true;
 
@@ -55,7 +51,8 @@ export function createDecompressor(type: ShardCompression, events: DecompressorE
             if (typeof inflate.result !== "string") {
                 events.data(inflate.result);
             }
-        }
+        } */
+        decompress = data => events.data(data);
     }
 
     return decompress;

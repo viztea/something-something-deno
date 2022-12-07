@@ -3,6 +3,7 @@ import "https://deno.land/std@0.167.0/dotenv/load.ts";
 import { v10 } from "./discord/deps.ts";
 import { createShard } from "./discord/gateway/shard_impl.ts";
 import { yellow } from "https://deno.land/std@0.167.0/fmt/colors.ts";
+import { intents } from "./tools/mod.ts";
 
 const shard = createShard({
     token: Deno.env.get("DISCORD_TOKEN")!,
@@ -12,8 +13,9 @@ const shard = createShard({
     }
 });
 
-shard.connect({
+shard.connect([ 0, 1 ], {
     // compress: false,
+    intents: intents("Guilds", "GuildVoiceStates", "GuildMessages"), 
     presence: {
         status: v10.PresenceUpdateStatus.Online,
         activities: [
@@ -40,3 +42,5 @@ for await (const dispatch of shard.dispatch) {
         }
     }
 }
+
+
