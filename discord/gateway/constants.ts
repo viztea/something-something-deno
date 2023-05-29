@@ -1,4 +1,4 @@
-import { v10 } from "../deps.ts";
+import { v10 } from "./deps.ts";
 
 export const UNRECOVERABLE_CLOSE_CODES = [
     1005,

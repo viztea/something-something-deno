@@ -1,4 +1,4 @@
-import { v10 } from "../deps.ts";
+import { v10 } from "./deps.ts";
 import { closeReasons } from "./constants.ts";
 import { ShardState } from "./shard.ts";
 import { createShardHeart, createShardSession, shardDisconnect, ShardMemory, shardReconnect } from "./shard_impl.ts";
@@ -89,6 +89,7 @@ export async function handleReceivedPayload(memory: ShardMemory, payload: v10.Ga
 
 async function handleDispatchPayload(memory: ShardMemory, payload: v10.GatewayDispatchPayload) {
     memory.session?.updateSequence(payload.s);
+
     switch (payload.t) {
         case v10.GatewayDispatchEvents.Ready: {
             memory.state = ShardState.Ready;
@@ -117,6 +118,5 @@ async function handleDispatchPayload(memory: ShardMemory, payload: v10.GatewayDi
             break;
         }
     }
-
     memory.dispatch.controller.enqueue(payload);
 }
