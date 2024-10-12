@@ -105,7 +105,7 @@ async function vgwConnect(gateway: VoiceGateway) {
         throw new Error("Failed to connect to voice gateway.");
     }
 
-    /* resume the current sessio or identify as a new session */
+    /* resume the current session or identify as a new session */
     if (gateway.session) {
         session.resume(gateway.session, gateway);
     } else send(gateway, {

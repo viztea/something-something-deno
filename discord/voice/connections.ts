@@ -13,7 +13,7 @@ import { createFrameSender } from "./frame/legacy_sender.ts";
 import { createSuite } from "./frame/enc/legacy_suite.ts";
 import { createPacketProvider } from "./frame/legacy_provider.ts";
 import type { CryptoSuite } from "./frame/enc/legacy_suite.ts";
-
+ts
 const k_memory = Symbol.for("VoiceConnection#memory");
 
 interface VoiceConnectionMemory {
