@@ -75,7 +75,7 @@ function beat(heart: VoiceGatewayHeart, reason: string, ignoreNonAcked = false):
     if (!memory.acknowledged) {
         gateway.emitDebug(memory.gateway, "ws/heart", "last heartbeat was not acknowledged, reconnecting...");
         if (!ignoreNonAcked) {
-            // TODO(melike2d): disconnect from gateway
+            // TODO(viztea): disconnect from gateway
             // return shardDisconnect(memory, { reconnect: true, code: 1_012 })
         }
     }

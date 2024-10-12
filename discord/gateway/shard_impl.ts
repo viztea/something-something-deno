@@ -169,7 +169,7 @@ async function shardConnect(memory: ShardMemory) {
         throw new Error("Unable to create socket.");
     }
 
-    // todo(melike2d): queue identify
+    // todo(viztea): queue identify
     if (memory.session) {
         memory.settings.events?.debug?.("identify", "found previous session, resuming.");
         await memory.session.resume();

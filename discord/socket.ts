@@ -13,7 +13,7 @@ export interface BaseMemory {
     socket: Nullable<ws.PogSocket>;
 }
 
-// TODO(melike2d): convert function events to event stream
+// TODO(viztea): convert function events to event stream
 export function send0(memory: BaseMemory, payload: unknown) {
     if (!memory.socket) return;
 

@@ -145,7 +145,7 @@ export interface Shard {
     /** The heart of this shard, responsible for heartbeating. */
     readonly heart: Nullable<ShardHeart>
 
-    // TODO(melike2d): convert Dispatch read stream into Shard Event read stream.
+    // TODO(viztea): convert Dispatch read stream into Shard Event read stream.
 
     /** Stream of incoming dispatch events. */
     readonly dispatch: ReadableStream<v10.GatewayDispatchPayload>;

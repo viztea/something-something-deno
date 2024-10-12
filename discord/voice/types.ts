@@ -20,7 +20,7 @@ export type VoiceReceivePayload = VoiceReady | VoiceHello | VoiceSessionDescript
 export type VoiceSendPayload    = VoiceSelectProtocol | VoiceIdentify | VoiceSpeakingSend | VoiceResume | VoiceHeartbeat;
 
 /*  */
-// todo(melike2d): verify this:
+// todo(viztea): verify this:
 export type VoiceEncryptionMode = 
     | "xsalsa20_poly1305" 
     | "xsalsa20_poly1305_lite" 
@@ -146,7 +146,7 @@ export interface VoiceIdentify extends BasePayload {
 /* client_connect */
 export interface VoiceClientConnect extends BasePayload {
     op: v4.VoiceOpcodes.ClientConnect;
-    d: null; // TODO(melike2d)
+    d: null; // TODO(viztea)
 }
 
 /* client_disconnect */
