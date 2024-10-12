@@ -73,15 +73,15 @@ for await (const dispatch of shard.dispatch) {
             console.log(`${whoami.username}#${whoami.discriminator} is now online!`);
 
             vgwConnectData.userId = whoami.id;
-            vgwConnectData.guildId = "323365823572082690";
+            vgwConnectData.guildId = Deno.env.get("DISCORD_GUILD");
 
             shard.send({
                 op: v10.GatewayOpcodes.VoiceStateUpdate,
                 d: {
                     self_deaf: true,
                     self_mute: false,
-                    channel_id: "1193997464886317137",
-                    guild_id: "323365823572082690"
+                    channel_id: Deno.env.get("DISCORD_VOICE")!,
+                    guild_id: Deno.env.get("DISCORD_GUILD")!
                 }
             });
 
