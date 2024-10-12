@@ -1,4 +1,4 @@
-import { inflate } from "../deps.ts";
+import { inflate } from "./deps.ts";
 import { ShardCompression } from "./shard.ts";
 
 export type Decompress = (data: Uint8Array) => void;

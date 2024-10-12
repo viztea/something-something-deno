@@ -1,5 +1,6 @@
 import { Nullable } from "../../tools/types.ts";
-import { v10 } from "../deps.ts";
+import { BaseSettings } from "../socket.ts";
+import { v10 } from "./deps.ts";
 
 export enum ShardCompression {
     /** Enable optional compression for all packets when Discord is sending events over the connection. */
@@ -7,18 +8,6 @@ export enum ShardCompression {
     /** Enable optional per-packet compression for some events when Discord is sending events over the connection. */
     Payload
 }
-
-
-export enum ShardEventType {
-    Payload,
-    Close
-}
-
-type createShardEvent<Type extends ShardEventType, D extends Record<string, unknown>> = { type: Type } & D;
-
-export type ShardEvent = ShardCloseEvent | ShardPayloadEvent;
-export type ShardPayloadEvent = createShardEvent<ShardEventType.Payload, { data: v10.GatewayReceivePayload }>;
-export type ShardCloseEvent = createShardEvent<ShardEventType.Close, { code: number, reason?: string }>;
 
 export enum ShardState {
     /**
@@ -99,15 +88,12 @@ export interface ShardHeart {
     beat(reason: string, ignoreNonAcked?: boolean): Promise<void>;
 }
 
-export interface ShardSettings {
+export interface ShardSettings extends BaseSettings {
     /** The token to use. */
     readonly token: string;
 
-    // EVENTS
-    readonly events?: {
-        error?(error: Error): void;
-        debug?(category: string, ...args: unknown[]): void;
-    }
+    /** Gateway version to use. */
+    readonly version: number;
 
     /** Function used for creating a custom shard session. */
     // readonly createHeart?: (shard: Shard, heartbeatInterval: number) => ShardHeart;
@@ -133,8 +119,7 @@ export interface ShardConnectOptions {
     readonly compression?: ShardCompression;
 
     /** The gateway to use, e.g. "wss://gateway.discord.gg/" */
-    readonly gateway?: string
-
+    readonly gateway?: string;
 }
 
 export interface ShardDisconnectOptions {
@@ -159,6 +144,8 @@ export interface Shard {
 
     /** The heart of this shard, responsible for heartbeating. */
     readonly heart: Nullable<ShardHeart>
+
+    // TODO(melike2d): convert Dispatch read stream into Shard Event read stream.
 
     /** Stream of incoming dispatch events. */
     readonly dispatch: ReadableStream<v10.GatewayDispatchPayload>;

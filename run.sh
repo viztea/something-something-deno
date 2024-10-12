@@ -1,1 +1,1 @@
-deno run --allow-net --allow-read --allow-env mod.ts
+deno run --unstable --allow-all mod.ts $@

@@ -1,9 +1,10 @@
 import { Nullable, RequiredKeys, createLimiter, readable, Limiter, Readable } from "../../tools/mod.ts";
-import { v10, ws, readableStreamFromIterable } from "../deps.ts";
-import { Shard, ShardCompression, ShardConnectOptions, ShardDisconnectOptions, ShardEventType, ShardHeart, ShardId, ShardSession, ShardSettings, ShardState } from "./shard.ts";
-import { fromWebSocketEventToShardEvent } from "./ws.ts";
+import { v10, ws, readableStreamFromIterable } from "./deps.ts";
+import { Shard, ShardCompression, ShardConnectOptions, ShardDisconnectOptions, ShardHeart, ShardId, ShardSession, ShardSettings, ShardState } from "./shard.ts";
+import { pogSocketEventTransform, SocketEventType } from "./ws.ts";
 import { handleCloseCode, handleReceivedPayload } from "./handlers.ts";
 import { UNRECOVERABLE_CLOSE_CODES } from "./constants.ts";
+import { BaseMemory, send0 } from "../socket.ts";
 
 export function createShardHeart(memory: ShardMemory, interval: number): ShardHeart {
     let acknowledged = true, lastHeartbeat: number, latency: Nullable<number> = null;
@@ -77,42 +78,8 @@ export const DEFAULT_SHARD_CONNECT_CONFIG: RequiredKeys<ShardConnectOptions, Exc
     }
 }
 
-export interface ShardMemory {
-    settings: ShardSettings;
-    heart: Nullable<ShardHeart>;
-    session: Nullable<ShardSession>;
-    socket: Nullable<ws.PogSocket>;
-    state: ShardState;
-    limiter: Limiter;
-    dispatch: Readable<v10.GatewayDispatchPayload>;
-    connect: Nullable<{
-        compression: ShardCompression;
-        gateway: string;
-        id: ShardId;
-        options: typeof DEFAULT_SHARD_CONNECT_CONFIG;
-    }>;
-}
-
-function shardSend0(memory: ShardMemory, payload: v10.GatewaySendPayload) {
-    if (!memory.socket) return;
-
-    /* encode payload into JSON */
-    let encoded;
-    try {
-        encoded = JSON.stringify(payload)
-    } catch (cause) {
-        memory.settings.events?.error?.(new Error("Could not encode JSON", { cause }));
-        memory.settings.events?.debug?.("ws", "unable to encode payload:", payload);
-        return
-    }
-
-    /* send encoded payload to socket */
-    ws.sendMessage(memory.socket, encoded);
-    memory.settings.events?.debug?.("ws", ">>>", encoded);
-}
-
 export function shardSend(memory: ShardMemory, payload: v10.GatewaySendPayload, important = false) {
-    return memory.limiter.push(() => shardSend0(memory, payload), important);
+    return memory.limiter.push(() => send0(memory, payload), important);
 }
 
 function shardClose0(memory: ShardMemory, reason: string, code = 4_420): boolean {
@@ -142,6 +109,7 @@ async function shardConnect0(memory: ShardMemory) {
 
     /* create gateway url params */
     const params = new URLSearchParams();
+    params.append("v", memory.settings.version.toString());
     params.append("encoding", "json");
 
     if (connect.compression === ShardCompression.Transport) {
@@ -155,8 +123,7 @@ async function shardConnect0(memory: ShardMemory) {
     memory.socket = await ws.connectPogSocket(url);
 
     /* return message stream */
-    return readableStreamFromIterable(ws.readSocket(memory.socket))
-        .pipeThrough(fromWebSocketEventToShardEvent(memory))
+    return readableStreamFromIterable(ws.readSocket(memory.socket)).pipeThrough(pogSocketEventTransform(memory))
 }
 
 export function shardReconnect(memory: ShardMemory) {
@@ -222,9 +189,9 @@ async function shardConnect(memory: ShardMemory) {
     }
 
     for await (const event of events) {
-        if (event.type === ShardEventType.Payload) {
+        if (event.type === SocketEventType.Payload) {
             await handleReceivedPayload(memory, event.data);
-        } else if (event.type === ShardEventType.Close) {
+        } else if (event.type === SocketEventType.Close) {
             if ([ShardState.Disconnecting, ShardState.Disconnected].includes(memory.state)) {
                 /* we meant to disconnect, nothing to do here. */
                 return;
@@ -302,4 +269,21 @@ export function createShard(settings: ShardSettings): Shard {
             await shardSend(memory, payload, important)
         }
     }
+}
+
+
+export interface ShardMemory extends BaseMemory {
+    settings: ShardSettings;
+    heart: Nullable<ShardHeart>;
+    session: Nullable<ShardSession>;
+    socket: Nullable<ws.PogSocket>;
+    state: ShardState;
+    limiter: Limiter;
+    dispatch: Readable<v10.GatewayDispatchPayload>;
+    connect: Nullable<{
+        compression: ShardCompression;
+        gateway: string;
+        id: ShardId;
+        options: typeof DEFAULT_SHARD_CONNECT_CONFIG;
+    }>;
 }

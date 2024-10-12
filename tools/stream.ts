@@ -1,12 +1,17 @@
 import { toTransformStream } from "https://deno.land/std@0.167.0/streams/to_transform_stream.ts";
+import { mergeReadableStreams } from "https://deno.land/std@0.167.0/streams/merge_readable_streams.ts";
+import { writableStreamFromWriter } from "https://deno.land/std@0.167.0/streams/writable_stream_from_writer.ts";
+import { readableStreamFromReader } from "https://deno.land/std@0.167.0/streams/readable_stream_from_reader.ts";
 import { Awaitable } from "./types.ts";
+
+export { toTransformStream, mergeReadableStreams, writableStreamFromWriter, readableStreamFromReader };
 
 export interface Readable<T> {
     stream: ReadableStream<T>;
     controller: ReadableStreamDefaultController<T>;
 }
 
-export function readable<T>(): Readable<T> {
+export function readable<T>(type?: "bytes"): Readable<T> {
     let controller: ReadableStreamDefaultController<T>;
 
     const stream = new ReadableStream<T>({
