@@ -5,6 +5,8 @@ import { create, createLiteNonceStrategy, createNormalNonceStrategy, createSuffi
 
 export interface ICryptoStrategy {
     name: string;
+
+    key: Uint8Array;
 }
 
 export interface EncryptionStrategy extends ICryptoStrategy {

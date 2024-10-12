@@ -16,6 +16,7 @@ export async function create(secretKey: Uint8Array, nonceStrategy: NonceStrategy
     const nonceWriter = writers.create(NONCE_LENGTH);
     return {
         name: getSuiteName(nonceStrategy.type),
+        key: secretKey,
         encrypt: (writer: writers.ByteWriter, header: RtpHeader, payload: Uint8Array) => {
             /* reset the nonce cursor and generate a new nonce. */
             writers.reset(nonceWriter);

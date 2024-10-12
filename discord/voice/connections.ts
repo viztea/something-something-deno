@@ -101,6 +101,7 @@ function suite(connection: VoiceConnection): Promise<CryptoSuite> {
  * @param connection the voice connection to provide the stream to.
  */
 async function provide(connection: VoiceConnection, source: ReadableStream<Frame>) {
+    await source.pipeTo(readableToWritableStream(connection[k_memory].frames))
 }
 
 /**

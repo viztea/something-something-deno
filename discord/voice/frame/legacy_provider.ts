@@ -14,8 +14,8 @@ export function createPacketProvider(
         timestamp += 960;
 
         return rtp.header.create(
-            sequence = encryptionStrategy.nextSequence(sequence),
             ts,
+            sequence = encryptionStrategy.nextSequence(sequence),
             ssrc,
         );
     }

@@ -2,11 +2,12 @@ import "https://deno.land/std@0.167.0/dotenv/load.ts";
 
 import { createShard } from "./discord/gateway/shard_impl.ts";
 import { blue, green, magenta, yellow } from "https://deno.land/std@0.167.0/fmt/colors.ts";
-import { intents, Nullable } from "./tools/mod.ts";
+import { intents } from "./tools/mod.ts";
 import { APIv10, v10 } from "./discord/gateway/deps.ts";
 import { VoiceGatewayConnectOptions, VoiceGatewayEventType, VoiceGateways } from "./discord/voice/gateway/mod.ts";
 import { PCMStream } from "./tools/ffmpeg.ts";
-import { getInfo, downloadFromInfo } from "https://deno.land/x/ytdl_core@v0.1.1/mod.ts";
+import { getInfo, downloadFromInfo } from "https://deno.land/x/ytdl_core@v0.1.2/mod.ts";
+import connections from "./discord/voice/connections.ts";
 
 const shard = createShard({
     token: Deno.env.get("DISCORD_TOKEN")!,
@@ -31,8 +32,8 @@ shard.connect([0, 1], {
         afk: true,
     },
     properties: {
-        browser: "Kyu",
-        device: "Kyu",
+        browser: "Deno",
+        device: "Deno",
         os: "Android",
     }
 });
@@ -79,7 +80,7 @@ for await (const dispatch of shard.dispatch) {
                 d: {
                     self_deaf: true,
                     self_mute: false,
-                    channel_id: "1015908673358405713",
+                    channel_id: "1193997464886317137",
                     guild_id: "323365823572082690"
                 }
             });
@@ -98,7 +99,37 @@ for await (const dispatch of shard.dispatch) {
 
             switch (command) {
                 case "play": {
+                    const connection = vgw.session?.connection;
+                    if (!connection) {
+                        console.error("No connection found.");
+                        break;
+                    }
+
                     const input = words.join(" ");
+                    connections.provide(
+                        connection,
+                        await getPCMStream(input)
+                    )
+
+                    // const suite = await connections.suite(connection), writer = writers.create(2048, "big");
+
+                    // let seq = 0, ts = 0, speaking = false;
+                    // await stream
+                    //     .pipeThrough(createOpusTransform())
+                    //     .pipeThrough(streams.map(_ => RTP.packet.create(RTP.header.create(ts, seq, connection.ssrc), _)))
+                    //     .pipeThrough(streams.tap(_ => void (seq++, ts += 960)))
+                    //     .pipeThrough(streams.tap(_ => delay(20)))
+                    //     .pipeThrough(streams.map(_ => {
+                    //         writers.reset(writer);
+
+                    //         RTP.header.write(_.header, writer);
+                    //         suite.encrypt(writer, _.header, _.body);
+
+                    //         return writers.slice(writer);
+                    //     }))
+                    //     .pipeThrough(streams.tap(_ => !speaking ? void updateSpeaking(connection, speaking = true) : void 0))
+                    //     .pipeTo(transports.writable(connection.transport));
+
                     break;
                 }
             }

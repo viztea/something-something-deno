@@ -16,7 +16,7 @@ function transform(): TransformStream<RtpPacket, Uint8Array> {
         packet.write(rtp, writer);
 
         /* return the written RTP packet */
-        return buffer.slice(0, writer.position)
+        return buffer.slice(0, writer.position);
     });
 }
 

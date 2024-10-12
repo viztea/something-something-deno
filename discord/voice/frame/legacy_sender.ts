@@ -36,18 +36,18 @@ export function createFrameSender(connection: VoiceConnection): TransformStream<
                 } else if ((frame == null) && speaking && silence == 0) {
                     setSpeaking(false);
                 }
-    
+
                 /* if there are more silent frames to be sent make sure the frame is not null. */
                 if (frame == null && silence > 0) {
                     frame = silentFrame;
                     silence--
                 }
-    
+
                 if (frame != null) {
                     position += 20;
                     yield frame;
                 }
-    
+
                 /* queue the next frame timestamp. */
                 next += 20;
                 await delay(Math.max(0, next - (performance.now() - xd)))

@@ -16,7 +16,7 @@ export interface RtpHeader {
     payloadType:     number;
 }
 
-function create(sequence: number, timestamp: number, ssrc: number): RtpHeader {
+function create(timestamp: number, sequence: number, ssrc: number): RtpHeader {
     return {
         version: 2,
         hasExtension: false,

@@ -81,7 +81,7 @@ function beat(heart: VoiceGatewayHeart, reason: string, ignoreNonAcked = false):
     }
 
     gateway.emitDebug(memory.gateway, "ws/heart", "sending heartbeat, reason:", reason)
-    memory.lastHeartbeat = performance.now();
+    memory.lastHeartbeat = Math.floor(performance.now());
     memory.acknowledged = false;
 
     gateway.send(
